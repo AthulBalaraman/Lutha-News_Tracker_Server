@@ -156,15 +156,16 @@ async def get_trends():
         return {"trends": []}
 
     url = "http://eventregistry.org/api/v1/trends/getTrends"
-    payload = {"apiKey": api_key}
+    # Added source to get more relevant trends
+    payload = {"apiKey": api_key, "source": "news"} 
 
     try:
         response = requests.post(url, json=payload)
         response.raise_for_status()
         data = response.json()
         
-        # Assuming the trends are in a key, e.g., 'trends' or 'results'
-        trends_data = data.get("trends", {}).get("results", [])
+        # Correctly access the nested 'results' array
+        trends_data = data.get("trends", {}).get("trends", {}).get("results", [])
         trends = [Trend(uri=t.get("uri"), label=t.get("label"), score=t.get("score")) for t in trends_data]
         
         logger.info(f"Successfully fetched {len(trends)} trends.")
