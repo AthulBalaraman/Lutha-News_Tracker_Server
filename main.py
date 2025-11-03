@@ -72,11 +72,15 @@ SORT_BY_MAP = {
 def scrape_real_news(q: Optional[str], country: Optional[str], category: Optional[str], sort_by: str) -> List[NewsArticle]:
     logger.info(f"Attempting to scrape real news from newsapi.ai with params: q={q}, country={country}, category={category}, sort_by={sort_by}")
     api_key = os.getenv("NEWS_API_KEY")
+    base_url = os.getenv("NEWS_API_AI_BASE_URL")
     if not api_key or api_key == "YOUR_API_KEY_HERE":
         logger.error("NEWS_API_KEY not found or is default in .env file.")
         return []
+    if not base_url:
+        logger.error("NEWS_API_AI_BASE_URL not found in .env file.")
+        return []
 
-    url = "http://eventregistry.org/api/v1/article/getArticles"
+    url = f"{base_url}/article/getArticles"
     
     payload = {
         "action": "getArticles",
@@ -151,11 +155,15 @@ async def get_news(
 async def get_trends():
     logger.info("Attempting to fetch trends from newsapi.ai...")
     api_key = os.getenv("NEWS_API_KEY")
+    base_url = os.getenv("NEWS_API_AI_BASE_URL")
     if not api_key or api_key == "YOUR_API_KEY_HERE":
         logger.error("NEWS_API_KEY not found or is default in .env file.")
         return {"trends": []}
+    if not base_url:
+        logger.error("NEWS_API_AI_BASE_URL not found in .env file.")
+        return {"trends": []}
 
-    url = "http://eventregistry.org/api/v1/trends/getTrends"
+    url = f"{base_url}/trends/getTrends"
     # Added source to get more relevant trends
     payload = {"apiKey": api_key, "source": "news"} 
 
