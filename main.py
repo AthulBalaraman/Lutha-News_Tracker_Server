@@ -26,7 +26,7 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-# II. Data Structure and Pydantic Model
+# II. Data Structure and Pydantic Models
 class NewsArticle(BaseModel):
     id: Optional[int] = None
     title: str
@@ -38,51 +38,85 @@ class NewsArticle(BaseModel):
     imageUrl: Optional[str] = None
     relevance_score: Optional[float] = None
 
+class Trend(BaseModel):
+    uri: str
+    label: str
+    score: float
+
+class TrendsResponse(BaseModel):
+    trends: List[Trend]
+
+# Mappings for newsapi.ai
+COUNTRY_URIS = {
+    "USA": "http://en.wikipedia.org/wiki/United_States",
+    "UK": "http://en.wikipedia.org/wiki/United_Kingdom",
+    "Japan": "http://en.wikipedia.org/wiki/Japan",
+    "Germany": "http://en.wikipedia.org/wiki/Germany",
+}
+
+CATEGORY_URIS = {
+    "Business": "dmoz/Business",
+    "Tech": "dmoz/Computers/Technology",
+    "Politics": "dmoz/Society/Politics",
+    "Science": "dmoz/Science",
+    "Health": "dmoz/Health",
+}
+
+SORT_BY_MAP = {
+    "newest": "date",
+    "relevance": "rel",
+    "source": "sourceImportance",
+}
+
 # III. Core Functions and Real Data Fetching
-def scrape_real_news() -> List[NewsArticle]:
-    logger.info("Attempting to scrape real news from newsapi.ai...")
+def scrape_real_news(q: Optional[str], country: Optional[str], category: Optional[str], sort_by: str) -> List[NewsArticle]:
+    logger.info(f"Attempting to scrape real news from newsapi.ai with params: q={q}, country={country}, category={category}, sort_by={sort_by}")
     api_key = os.getenv("NEWS_API_KEY")
     if not api_key or api_key == "YOUR_API_KEY_HERE":
-        logger.error("NEWS_API_KEY not found or is default in .env file. Please set your actual API key.")
+        logger.error("NEWS_API_KEY not found or is default in .env file.")
         return []
 
     url = "http://eventregistry.org/api/v1/article/getArticles"
     
     payload = {
         "action": "getArticles",
-        "keyword": "business",
         "articlesPage": 1,
         "articlesCount": 20,
-        "articlesSortBy": "date",
+        "articlesSortBy": SORT_BY_MAP.get(sort_by, "date"),
         "articlesSortByAsc": False,
         "articlesArticleBodyLen": -1,
         "resultType": "articles",
-        "dataType": [
-            "news",
-            "blog"
-        ],
+        "dataType": ["news", "blog"],
         "apiKey": api_key,
         "forceMaxDataTimeWindow": 31
     }
 
+    # Add conditional parameters
+    if q:
+        payload["keyword"] = q
+    else:
+        payload["keyword"] = "business" # Default keyword if none provided
+    
+    if country and country in COUNTRY_URIS:
+        payload["sourceLocationUri"] = COUNTRY_URIS[country]
+        
+    if category and category in CATEGORY_URIS:
+        payload["categoryUri"] = CATEGORY_URIS[category]
+
     try:
         response = requests.post(url, json=payload)
-        response.raise_for_status()  # Raise an exception for bad status codes
+        response.raise_for_status()
         data = response.json()
         
         articles = []
         for i, item in enumerate(data.get("articles", {}).get("results", [])):
-            # Ensure 'dateTimePub' is not None before processing
             published_at = item.get("dateTimePub")
+            timestamp = datetime.now()
             if published_at:
                 try:
                     timestamp = datetime.fromisoformat(published_at)
-                except ValueError:
+                except (ValueError, TypeError):
                     logger.warning(f"Could not parse timestamp for article: {item.get('title')}. Using current time.")
-                    timestamp = datetime.now()
-            else:
-                logger.warning(f"'dateTimePub' is missing for article: {item.get('title')}. Using current time.")
-                timestamp = datetime.now()
 
             article = NewsArticle(
                 id=i + 1,
@@ -91,8 +125,8 @@ def scrape_real_news() -> List[NewsArticle]:
                 source=item.get("source", {}).get("title", "Unknown Source"),
                 timestamp=timestamp,
                 imageUrl=item.get("image"),
-                country=item.get("location", {}).get("country", {}).get("label"),
-                category=item.get("concepts")[0].get("label") if item.get("concepts") else "General",
+                country=next((k for k, v in COUNTRY_URIS.items() if v == item.get("location", {}).get("country", {}).get("uri")), None),
+                category=next((k for k, v in CATEGORY_URIS.items() if v in item.get("categories", [])), "General"),
                 relevance_score=item.get("relevance", 0.0)
             )
             articles.append(article)
@@ -103,9 +137,7 @@ def scrape_real_news() -> List[NewsArticle]:
         logger.error(f"Error fetching news from newsapi.ai: {e}")
         return []
 
-news_data = scrape_real_news()
-
-# IV. API Endpoint: /news
+# IV. API Endpoints
 @app.get("/news", response_model=List[NewsArticle])
 async def get_news(
     q: Optional[str] = Query(None, description="Global search term for title and summary"),
@@ -113,50 +145,33 @@ async def get_news(
     category: Optional[str] = Query(None, description="Filter by category"),
     sort_by: str = Query('newest', description="Sort by: 'newest', 'oldest', 'source', 'relevance'")
 ):
-    logger.info(f"GET /news endpoint accessed with params: q={q}, country={country}, category={category}, sort_by={sort_by}")
-    """
-    Provides a filterable and sortable list of news articles.
-    """
-    results = news_data
+    return scrape_real_news(q, country, category, sort_by)
 
-    # 1. Filtering and Searching
-    if q:
-        initial_count = len(results)
-        results = [
-            article for article in results 
-            if q.lower() in article.title.lower() or (article.summary and q.lower() in article.summary.lower())
-        ]
-        logger.info(f"Filtered by search term '{q}': {initial_count} -> {len(results)} articles.")
+@app.get("/trends", response_model=TrendsResponse)
+async def get_trends():
+    logger.info("Attempting to fetch trends from newsapi.ai...")
+    api_key = os.getenv("NEWS_API_KEY")
+    if not api_key or api_key == "YOUR_API_KEY_HERE":
+        logger.error("NEWS_API_KEY not found or is default in .env file.")
+        return {"trends": []}
 
-    if country:
-        initial_count = len(results)
-        results = [article for article in results if article.country and article.country.lower() == country.lower()]
-        logger.info(f"Filtered by country '{country}': {initial_count} -> {len(results)} articles.")
+    url = "http://eventregistry.org/api/v1/trends/getTrends"
+    payload = {"apiKey": api_key}
 
-    if category:
-        initial_count = len(results)
-        results = [article for article in results if article.category and article.category.lower() == category.lower()]
-        logger.info(f"Filtered by category '{category}': {initial_count} -> {len(results)} articles.")
-
-    # 2. Sorting
-    if sort_by == 'newest':
-        results.sort(key=lambda x: x.timestamp, reverse=True)
-        logger.info("Sorted by 'newest'.")
-    elif sort_by == 'oldest':
-        results.sort(key=lambda x: x.timestamp)
-        logger.info("Sorted by 'oldest'.")
-    elif sort_by == 'source':
-        results.sort(key=lambda x: x.source)
-        logger.info("Sorted by 'source'.")
-    elif sort_by == 'relevance':
-        # Ensure relevance_score is not None before sorting
-        results.sort(key=lambda x: x.relevance_score if x.relevance_score is not None else 0.0, reverse=True)
-        logger.info("Sorted by 'relevance'.")
-    else:
-        logger.warning(f"Unknown sort_by parameter: {sort_by}. No sorting applied.")
-
-    logger.info(f"Returning {len(results)} articles.")
-    return results
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Assuming the trends are in a key, e.g., 'trends' or 'results'
+        trends_data = data.get("trends", {}).get("results", [])
+        trends = [Trend(uri=t.get("uri"), label=t.get("label"), score=t.get("score")) for t in trends_data]
+        
+        logger.info(f"Successfully fetched {len(trends)} trends.")
+        return {"trends": trends}
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching trends from newsapi.ai: {e}")
+        return {"trends": []}
 
 @app.get("/")
 def read_root():
@@ -164,17 +179,7 @@ def read_root():
     return {"message": "Welcome to the Global News Tracker API"}
 
 # To run this application:
-# 1. Create a virtual environment:
-#    python -m venv venv
-#    source venv/bin/activate  (or venv\Scripts\activate on Windows)
-# 2. Install dependencies:
-#    pip install -r requirements.txt
-# 3. Create a .env file in the same directory and add your NewsAPI.org key:
-#    NEWS_API_KEY=your_actual_api_key
-# 4. Run the server:
-#    uvicorn main:app --reload
-
-
-# curl "http://127.0.0.1:8000/news"
-# curl "http://127.0.0.1:8000/news?q=tech"
-# curl "http://127.0.0.1:8000/news?country=uk&sort_by=oldest"
+# 1. Create a virtual environment and activate it.
+# 2. Install dependencies: pip install -r requirements.txt
+# 3. Create a .env file and add your NEWS_API_KEY.
+# 4. Run the server: uvicorn main:app --reload
